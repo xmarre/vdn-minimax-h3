@@ -1,0 +1,116 @@
+# Production audio-fix LoRA.
+#
+# Frozen stack:
+#   MiniMax H3 base + released VDN branch + Stage-B `default` + finished `turbo`
+#   Both frozen adapters run at their canonical/native unit LoRA scale during training:
+#   Stage-B 1.0, Turbo 1.0. The Turbo source target set is fail-closed unless every
+#   resolved alpha/rank (including per-target patterns) equals 1.0.
+#   Inference tuning such as Turbo 0.75 is validation/deployment, not baked into the
+#   learned correction.
+# Trainable:
+#   one small `audio_fix` sidecar LoRA, applied only to generated-audio rows
+# Teacher:
+#   released dense H3 at the exact same on-policy state/grid point
+# Sampler/chunk contract:
+#   deterministic 10-step RES multistep
+#   MiniMax H3 SA-Solver Scheduler `simple_control` SIGMAS (exact Comfy `simple`)
+#   video shift 12 / audio shift 3
+#   7-second H3 chunk request at 24 fps = 168 requested frames
+#   MiniMax H3 aligns that request to 175 pixel frames / 52 video latent frames
+#
+# This first corrective trainer is intentionally text-only/full-grid. References,
+# Spectrum forecasting and Progressive Mixed-Grid Continuum remain mandatory decoded
+# deployment validation dimensions; this file does not pretend to reproduce those paths.
+#
+# `data.index_file` is intentionally site-specific. Run e.g.:
+#
+#   torchrun --standalone --nproc_per_node=1 src/training/train_audio_fix.py \
+#     --config configs/training/audio_fix_res10.yaml \
+#     data.index_file=/path/to/video_index.jsonl distributed.shard_size=1
+
+initialization:
+  # Finished released stack: no Stage-B/Larry initializer is required separately.
+  checkpoint: ckpts/stage-dmd-step-250
+  base_source: null
+  source_step: 250
+  vdn_adapter_name: default
+  turbo_adapter_name: turbo
+
+adapter:
+  name: audio_fix
+  rank: 32
+  alpha: 32
+  # Targets are derived from initialization.turbo_adapter_name, so the verified frozen
+  # Turbo adapter and the target source cannot be configured independently.
+  # Exact q/k/v/out + fc1 targets shared by Diffusers training and the production
+  # ComfyUI path. Fused INT8 fc2 and non-row-wise AdaLN/refiner/final targets stay out.
+  target_policy: portable_sequence_linear
+
+rollout:
+  sampler: res_multistep
+  sigma_schedule: simple_control
+  num_steps: 10
+  video_shift: 12.0
+  audio_shift: 3.0
+
+generation:
+  # Current production Continuum chunk request: 7 seconds * 24 fps.
+  # generation_geometry() applies H3's canonical VAE alignment internally.
+  num_frames: 168
+  latent_height: 48
+  latent_width: 84
+
+training:
+  max_steps: 250
+  seed: 0
+  audio_teacher_weight: 1.0
+  # The correction is directly audio-row-only, but altered audio K/V can affect video
+  # queries. Preserve the original finished VDN/Turbo video prediction explicitly.
+  video_preserve_weight: 0.1
+  auto_resume: true
+
+optimizer:
+  name: prodigy_plus_schedule_free
+  # Prodigy-Plus Schedule-Free baseline. No external LR scheduler or grad clipping.
+  lr: 1.0
+  beta1: 0.95
+  beta2: 0.99
+  weight_decay: 0.0
+  d0: 1.0e-6
+  d_coef: 1.0
+  d_limiter: true
+  prodigy_steps: 0
+  schedulefree_c: 0.0
+  eps: 1.0e-8
+  factored: true
+  factored_fp32: true
+  use_stableadamw: true
+  use_schedulefree: true
+  split_groups: false
+
+distributed:
+  strategy: fsdp2
+  activation_checkpointing: true
+  shard_size: 8
+  offload_activations: true
+  memory_fraction: 0.96
+
+checkpoint:
+  output_dir: ckpts/train/audio_fix_res10
+  save_every: 10
+  keep_states: 3
+  early_saves: [0, 1, 2, 4, 8, 16, 32]
+  adapter_dtype: float32
+
+runtime:
+  kernels:
+    # Training keeps OpenVDN's differentiable flex implementation. Comfy's `grouped`
+    # runtime computes the same VDN per-query global/window/anchor softmax set via
+    # grouped dense SDPA; the backend difference is kernel/reduction order, not mask math.
+    softmax_backend: flex
+
+data:
+  # Text-only: each index row still spells a sibling video/<name>.pt path so the
+  # existing dataset can derive text/<name>.pt, but the video/audio files need not exist.
+  index_file: ???
+  num_workers: 4

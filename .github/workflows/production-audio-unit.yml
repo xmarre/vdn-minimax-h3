@@ -1,0 +1,40 @@
+name: Audio-fix unit tests
+
+on:
+  push:
+    branches: ["fix/production-audio-rollout"]
+  pull_request:
+
+jobs:
+  audio-fix:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install CPU test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --index-url https://download.pytorch.org/whl/cpu torch
+          python -m pip install pytest safetensors omegaconf prodigy-plus-schedule-free==2.0.1
+      - name: Syntax-check training entrypoints
+        run: |
+          python -m py_compile \
+            src/config/audio_fix.py \
+            src/training/audio_fix.py \
+            src/training/audio_fix_adapter.py \
+            src/training/res_multistep_math.py \
+            src/training/train_audio_fix.py
+      - name: Run audio-fix and RES-multistep tests
+        run: |
+          python -m pytest -q \
+            tests/test_production_audio_math.py \
+            tests/test_audio_fix_adapter.py \
+            tests/test_audio_fix_config.py \
+            tests/test_audio_fix_optimizer.py \
+            tests/test_text_only_dataset.py

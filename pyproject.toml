@@ -23,6 +23,7 @@ dependencies = [
     "pillow==12.3.0",
     "torchvision==0.28.0",        # Qwen3-VL's processor needs it (src/inference/encode_prompt.py)
     "av==18.1.0",                 # mp4 muxing (diffusers.utils.export_utils.encode_video)
+    "prodigy-plus-schedule-free==2.0.1",
     "tqdm",
 ]
 
