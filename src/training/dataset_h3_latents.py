@@ -12,8 +12,10 @@ One sample = one clip, pre-encoded with the H3 VAEs and text encoder:
           precomputed Qwen3-VL rows in the exact format `MiniMaxH3Transformer3DModel`
           consumes, tags included.
 
-The index (`video_index.jsonl`) carries `latent_path` pointing at the video .pt; the
-audio/text sidecars live in the sibling directories of the same name.
+The index (`video_index.jsonl`) carries `latent_path` spelled as the corresponding
+`video/<id>.pt`; audio/text sidecars are found by sibling path arithmetic. In
+``text_only`` mode (Stage-DMD and audio-fix training), the video path is only an
+identifier: the video/audio files do not need to exist and are never opened.
 """
 
 import json
@@ -25,9 +27,7 @@ from torch.utils.data import Dataset
 
 class H3LatentT2VADataset(Dataset):
     def __init__(self, index_file: str, text_only: bool = False):
-        """`text_only`: yield only the prompt rows (Stage-DMD needs no latents; the
-        generator samples its own). The video geometry is still read off the first
-        clip so a caller can check its generation shape against the dataset's."""
+        """`text_only`: yield only prompt rows; no video/audio latent file is opened."""
         self.text_only = text_only
         self.records = []
         with open(index_file) as f:
@@ -39,10 +39,13 @@ class H3LatentT2VADataset(Dataset):
         if not self.records:
             raise RuntimeError(f"No usable rows in {index_file}")
 
-        # The packed-sequence geometry is batch-shared, so every clip must have the same
-        # latent shape (e.g. (24, 102, 48, 84) for 345 frames at 384x672).
-        first = torch.load(self.records[0], map_location="cpu", weights_only=True)
-        self.video_shape = tuple(first.shape)
+        if text_only:
+            self.video_shape = None
+        else:
+            # The packed-sequence geometry is batch-shared, so every clip must have the same
+            # latent shape (e.g. (24, 102, 48, 84) for 345 frames at 384x672).
+            first = torch.load(self.records[0], map_location="cpu", weights_only=True)
+            self.video_shape = tuple(first.shape)
 
     def __len__(self) -> int:
         return len(self.records)
